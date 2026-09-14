@@ -1,0 +1,48 @@
+/**
+ * PayGuard —— 统一支付门闩（2026-09-14）
+ * 解决「支付成功 → 自动续跑 → 4001 → 二次拉起支付」到账竞态中的前端部分：
+ *   1. 状态机 idle → paying → confirming，同一时刻只允许一个支付流程；
+ *   2. 时间戳防抖，连点/快速重试无法打穿；
+ *   3. 所有调起支付弹窗的入口统一走本门闩（推荐/试衣/下载/重试逐步接入）。
+ * 注意：门闩只防「并发重复拉起」，治本仍需配合「到账双条件 + 续跑前重拉余额 + 不自动二次拉起」。
+ */
+export class PayGuard {
+	private state: string = "idle" // idle | paying | confirming
+	private lastTriggerAt: number = 0
+	private minIntervalMs: number = 800
+
+	constructor(minIntervalMs?: number) {
+		if (minIntervalMs != null && minIntervalMs > 0) {
+			this.minIntervalMs = minIntervalMs
+		}
+	}
+
+	/** 尝试进入支付流程：空闲且超过防抖间隔才放行。 */
+	tryBegin(): boolean {
+		if (this.state !== "idle") return false
+		const now = Date.now()
+		if (now - this.lastTriggerAt < this.minIntervalMs) return false
+		this.lastTriggerAt = now
+		this.state = "paying"
+		return true
+	}
+
+	/** 支付面板已拉起：进入「到账确认中」。 */
+	toConfirming(): void {
+		this.state = "confirming"
+	}
+
+	/** 结束本次支付流程（成功/失败/取消/超时后调用，允许后续再次触发）。 */
+	end(): void {
+		this.state = "idle"
+	}
+
+	/** 当前是否处于支付流程中（用于按钮置灰等 UI 反馈）。 */
+	isBusy(): boolean {
+		return this.state !== "idle"
+	}
+
+	getState(): string {
+		return this.state
+	}
+}
