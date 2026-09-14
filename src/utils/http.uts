@@ -1,5 +1,5 @@
 import { getHttpConfig } from './config.uts'
-import { getToken, clearToken, clearUserInfo, markLoginExpired } from './auth.uts'
+import { getToken, clearToken, clearUserInfo, markLoginExpired, clearLoginExpired } from './auth.uts'
 import { getBrandId } from './brand.uts'
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
@@ -91,6 +91,8 @@ export function rejectAllPending(): void {
   const queue = [..._pendingQueue]
   _pendingQueue = []
   _waitingForLogin = false
+  // 用户取消登录＝主动放弃处理：清掉过期标记，不再反复弹窗（bug #6 同源）
+  clearLoginExpired()
   queue.forEach((p) => {
     p.reject(new Error('用户取消登录'))
     if (p.showLoading) uni.hideLoading()

@@ -1,14 +1,14 @@
 <template>
 	<view class="page">
-		<CustomNavBar :title="navTitle" />
+		<CustomNavBar :title="navTitle" :back-fallback-url="'/pages/index/index'" />
 
 		<!-- 加载态 -->
 		<view v-if="status === 'processing'" class="center-content">
 			<view class="loading-wrapper">
 				<view class="loading-spinner"></view>
-				<text class="loading-tip">正在后台为你生成，完成后会通过微信服务通知提醒你</text>
+				<text class="loading-tip">{{ shareReadOnly ? '作品正在生成中，请稍后再来' : '正在后台为你生成，完成后会通过微信服务通知提醒你' }}</text>
 				<text class="elapsed-text" v-if="elapsedSeconds > 0">已等待 {{ elapsedSeconds }} 秒</text>
-				<view class="browse-btn btn-secondary" hover-class="press-dim" @click="goBrowseAlbums">逛逛其他相册</view>
+				<view v-if="!shareReadOnly" class="browse-btn btn-secondary" hover-class="press-dim" @click="goBrowseAlbums">逛逛其他相册</view>
 			</view>
 		</view>
 
@@ -23,7 +23,13 @@
 					@load="onImageLoad"
 				></image>
 			</view>
-			<view class="action-bar">
+			<!-- 分享落地只读：仅结果图 + 「我也要试」（bug #8 只读模式） -->
+			<view v-if="shareReadOnly" class="action-bar">
+				<view class="btn-primary" hover-class="press-dim" @click="tryThisOut">
+					<text>我也要试</text>
+				</view>
+			</view>
+			<view v-else class="action-bar">
 				<!-- 付费模式且无剩余次数且未买断：价格按钮，点击直接拉起支付（已买断永久免费保存） -->
 				<view v-if="isPaidMode && creditBalance <= 0 && !taskBought" class="save-btn-wrap">
 					<view class="btn-primary" hover-class="press-dim"
@@ -52,11 +58,17 @@
 		<!-- 失败态 -->
 		<view v-if="status === 'failed'" class="center-content">
 			<view class="fail-wrapper">
-				<text class="fail-text" v-if="failCount >= 3">当前服务繁忙，请稍后再试</text>
-				<text class="fail-text" v-else>生成失败，请重试</text>
-				<view class="retry-btn" hover-class="press-dim"
-					@click="handleRetry" v-if="failCount < 3">
+				<!-- 分享落地只读：不显示重试，仅友好提示 + 「我也要试」 -->
+				<text v-if="shareReadOnly" class="fail-text">该作品暂不可查看</text>
+				<!-- 失败文案保持通用：后端 error_message 仅记 console 日志，避免向用户泄露内部错误（CR 🟡） -->
+				<text v-else-if="failCount >= 3" class="fail-text">当前服务繁忙，请稍后再试</text>
+				<text v-else class="fail-text">生成失败，请重试</text>
+				<view v-if="!shareReadOnly && failCount < 3" class="retry-btn" hover-class="press-dim"
+					@click="handleRetry">
 					<text class="retry-btn-text">重试</text>
+				</view>
+				<view v-if="shareReadOnly" class="btn-primary" hover-class="press-dim" @click="tryThisOut">
+					<text>我也要试</text>
 				</view>
 				<view class="back-btn-wrapper" hover-class="press-dim"
 					@click="handleBack">
@@ -81,9 +93,9 @@
 </template>
 
 <script lang="uts">
-import { getAiTryOnResult, downloadAiTryOnResult, createCreditRecharge, getCreditRechargeStatus, getCreditBalance, getShops } from '../../utils/api.uts'
+import { getAiTryOnResult, getSharedAiTryOnResult, downloadAiTryOnResult, createCreditRecharge, getCreditRechargeStatus, getCreditBalance, getShops } from '../../utils/api.uts'
 import { isLoggedIn } from '../../utils/auth.uts'
-import { getBrandId } from '../../utils/brand.uts'
+import { getBrandId, setBrandId } from '../../utils/brand.uts'
 import { generateFaceCenteredCard } from '../../utils/faceShareCard.uts'
 import { cosThumb } from '../../utils/imageLoader.uts'
 
@@ -91,11 +103,17 @@ export default {
 	data() {
 		return {
 			taskId: '',
+			// 分享落地只读模式（B 用户从分享卡片进入，匿名查看 A 的试衣作品）
+			shareReadOnly: false,
+			shareToken: '',
+			isTimelinePage: false,   // 朋友圈单页模式（scene 1154，禁跳页）
+			taskErrorMessage: '',    // 失败文案（后端 error_message 兜底展示）
 			// 自定义导航栏标题：生成完成后由“正在生成”切换为“AI试衣结果”
 			navTitle: '正在生成',
 			status: 'processing' as string,  // 'pending' | 'processing' | 'completed' | 'failed'
 			resultImageUrl: '',
 			failCount: 0,
+			pollErrorStreak: 0,   // 连续网络异常计数（容忍 3 次抖动，避免单次闪断即打断等待）
 			pollingTimer: null as any,
 			elapsedSeconds: 0,
 			countdownTimer: null as any,
@@ -135,7 +153,27 @@ export default {
 	onLoad(options : any) {
 		this.taskId = options?.taskId ?? ''
 		this.shopId = options?.shopId ?? ''
-		if (this.taskId !== '') {
+		if (options?.shareToken != null && String(options.shareToken) !== '') {
+			this.shareToken = String(options.shareToken)
+		}
+		// 分享落地（朋友圈单页模式/好友卡片带参）→ 只读模式
+		this.shareReadOnly = options?.share_from === 'tryon_result'
+		// 恢复品牌上下文（分享链接携带，保证只读查询与「我也要试」同品牌）
+		if (options?.brandId != null && String(options.brandId) !== '') {
+			setBrandId(String(options.brandId))
+		}
+		// 朋友圈单页模式判定：scene 1154（禁跳页，仅内容展示）
+		try {
+			const enter = uni.getEnterOptionsSync()
+			this.isTimelinePage = (enter != null && enter.scene === 1154)
+		} catch (e) {
+			this.isTimelinePage = false
+		}
+		if (this.shareReadOnly) {
+			// 只读模式：拉取一次即止，不轮询、不重试、不要求登录
+			this.navTitle = 'AI试衣作品'
+			this.loadSharedTask()
+		} else if (this.taskId !== '') {
 			this.startPolling()
 		} else {
 			this.status = 'failed'
@@ -218,8 +256,7 @@ export default {
 		startPolling() {
 			this.status = 'processing'
 			this.elapsedSeconds = 0
-
-			// 启动计时器，每秒更新已等待时间
+			this.pollErrorStreak = 0
 			this.countdownTimer = setInterval(() => {
 				this.elapsedSeconds += 1
 				// 超时 180 秒（3分钟），停止轮询，展示失败
@@ -239,10 +276,17 @@ export default {
 		},
 
 		async pollResult() {
+			// 空任务兜底：直接失败，不空转轮询（bug #8：分享落地错位致 taskId 为空）
+			if (this.taskId === '') {
+				this.stopPolling()
+				this.status = 'failed'
+				return
+			}
 			try {
 				const res = await getAiTryOnResult(this.taskId)
 				// aiface 接口 code === 0 或 200 表示成功
 				if ((res.code === 0 || res.code === 200) && res.data) {
+					this.pollErrorStreak = 0
 					const taskStatus = res.data.status
 					if (taskStatus === 'completed') {
 						this.stopPolling()
@@ -253,6 +297,7 @@ export default {
 						this.navTitle = 'AI试衣结果'
 						this.styleName = res.data.style_name ?? ''
 						this.shopName = res.data.shop_name ?? ''
+						this.shareToken = res.data.share_token ?? ''
 						if (this.shopId === '' && res.data.shop_id > 0) {
 							this.shopId = String(res.data.shop_id)
 						}
@@ -263,14 +308,27 @@ export default {
 					} else if (taskStatus === 'failed') {
 						this.stopPolling()
 						this.status = 'failed'
+						this.taskErrorMessage = res.data.error_message ?? ''
+						console.error('[aiTryOnResult] 任务生成失败:', this.taskErrorMessage)
 					}
 					// pending / processing → 继续轮询
+				} else {
+					// 确定失败（任务不存在/无权限/业务码）→ 立即失败，不再空等 180 秒（bug #8）
+					this.stopPolling()
+					this.status = 'failed'
+					this.taskErrorMessage = res.message || '任务查询失败'
+					console.error('[aiTryOnResult] 任务查询确定失败:', this.taskErrorMessage)
 				}
 			} catch (err) {
-				console.error('轮询AI试衣结果失败:', err)
+				// 网络抖动容忍 3 次（CR 🟡）：瞬时闪断继续轮询，连续 3 次才判定失败
+				this.pollErrorStreak = this.pollErrorStreak + 1
+				console.error('轮询AI试衣结果失败:', err, 'streak=', this.pollErrorStreak)
+				if (this.pollErrorStreak >= 3) {
+					this.stopPolling()
+					this.status = 'failed'
+				}
 			}
 		},
-
 		stopPolling() {
 			if (this.pollingTimer != null) {
 				clearInterval(this.pollingTimer)
@@ -300,11 +358,18 @@ export default {
 			return `我也在蓝梅旅拍 AI 换装，试一下你「${style}」的样子`
 		},
 
-		// 朋友圈单页模式 query（onShareTimeline 用）
+		// 朋友圈单页模式 query（onShareTimeline 用）。单页模式打开的是「当前页（结果页）」：
+		// 必须带 taskId + shareToken 走只读落地（bug #8 根因修复），模板/门店/相册参数供「我也要试」回跳试衣页
 		buildShareQuery() : string {
 			const p = this.buildSharePath()
-			const i = p.indexOf('?')
-			return i >= 0 ? p.substring(i + 1) : ''
+			let q = p.indexOf('?') >= 0 ? p.substring(p.indexOf('?') + 1) : ''
+			if (this.taskId !== '') {
+				q = q + (q === '' ? '' : '&') + 'taskId=' + this.taskId
+			}
+			if (this.shareToken !== '') {
+				q = q + (q === '' ? '' : '&') + 'shareToken=' + this.shareToken
+			}
+			return q
 		},
 
 		// 分享落地路径：直达试衣页并预选该套系模板 + 品牌/门店完整上下文（行业方案：带参直达业务页）
@@ -373,7 +438,69 @@ export default {
 			})
 		},
 
+		// ===== 分享落地只读模式（bug #8）：匿名查看 A 的试衣作品 =====
+		// 凭 share_token 拉取一次即止：不轮询、不要求登录、不显示重试
+		async loadSharedTask() {
+			if (this.shareToken === '') {
+				this.status = 'failed'
+				return
+			}
+			try {
+				const res = await getSharedAiTryOnResult(this.shareToken)
+				if ((res.code === 0 || res.code === 200) && res.data) {
+					this.taskId = String(res.data.id)
+					this.templateId = res.data.template_id != null ? (res.data.template_id as number) : 0
+					this.styleName = res.data.style_name ?? ''
+					this.shopName = res.data.shop_name ?? ''
+					this.shopId = res.data.shop_id > 0 ? String(res.data.shop_id) : this.shopId
+					this.albumId = res.data.album_id > 0 ? String(res.data.album_id) : ''
+					if (res.data.status === 'completed' && res.data.result_image_url !== '') {
+						this.resultImageUrl = res.data.result_image_url
+						this.status = 'completed'
+						this.imageLoaded = false
+					} else if (res.data.status === 'failed') {
+						this.status = 'failed'
+						this.taskErrorMessage = res.data.error_message ?? ''
+					} else {
+						// pending/processing：作品生成中，仅展示进度态（不轮询、不重试）
+						this.status = 'processing'
+					}
+				} else {
+					this.status = 'failed'
+					this.taskErrorMessage = res.message || '作品不存在或已被删除'
+				}
+			} catch (err) {
+				console.error('[aiTryOnResult] 分享落地只读查询失败:', err)
+				this.status = 'failed'
+			}
+		},
+
+		// 只读模式 CTA「我也要试」：跳试衣页（单页模式禁跳页 → 引导点底部「前往小程序」）
+		tryThisOut() {
+			if (this.isTimelinePage) {
+				uni.showModal({
+					title: '蓝梅旅拍',
+					content: '请点击下方「前往小程序」，进入完整服务后即可上传照片体验 AI 试衣',
+					showCancel: false,
+					confirmText: '知道了'
+				})
+				return
+			}
+			const params: string[] = []
+			if (this.shopId !== '') params.push('shopId=' + this.shopId)
+			if (this.albumId !== '') params.push('albumId=' + this.albumId)
+			if (this.templateId > 0) params.push('templateId=' + this.templateId)
+			const brandId = getBrandId()
+			if (brandId !== '') params.push('brandId=' + brandId)
+			uni.navigateTo({ url: '/pages/aiTryOn/index' + (params.length > 0 ? '?' + params.join('&') : '') })
+		},
+
 		handleRetry() {
+			// 空任务兜底：无 taskId 不进入轮询（bug #8：分享落地错位/链接缺参）
+			if (this.taskId === '') {
+				this.status = 'failed'
+				return
+			}
 			this.failCount += 1
 			if (this.failCount >= 3) {
 				// 连续3次失败，不再重试
@@ -641,7 +768,22 @@ export default {
 
 		handleBack() {
 			this.stopPolling()
-			uni.navigateBack()
+			// 朋友圈单页模式禁跳页：引导用左上角 ✕ 关闭（CR 🟡）
+			if (this.isTimelinePage) {
+				uni.showModal({
+					title: '蓝梅旅拍',
+					content: '请点击左上角「✕」关闭返回朋友圈',
+					showCancel: false,
+					confirmText: '知道了'
+				})
+				return
+			}
+			// 分享冷启动栈深=1：navigateBack 会直接退出小程序 → 回首页（行业最佳实践）
+			if (getCurrentPages().length > 1) {
+				uni.navigateBack()
+			} else {
+				uni.reLaunch({ url: '/pages/index/index' })
+			}
 		}
 	}
 }

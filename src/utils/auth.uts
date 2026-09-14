@@ -141,6 +141,14 @@ export const consumeLoginExpired = (): boolean => {
 }
 
 /**
+ * 清除登录过期待处理标记（登录成功/取消登录时调用，
+ * 避免返回上一页 onShow 再次拉起登录弹窗——测试 bug #6）
+ */
+export const clearLoginExpired = (): void => {
+  _loginExpiredPending = false
+}
+
+/**
  * 检查是否已登录
  * @returns 是否已登录
  */
@@ -157,6 +165,8 @@ export const isLoggedIn = (): boolean => {
 export const loginSuccess = (token: string, userInfo: UserInfo): void => {
   setToken(token)
   setUserInfo(userInfo)
+  // 登录成功即消化 401 过期标记（bug #6：登录后返回上一页又弹登录弹窗）
+  clearLoginExpired()
   console.log('登录成功:', userInfo.nickname)
 }
 
@@ -166,5 +176,7 @@ export const loginSuccess = (token: string, userInfo: UserInfo): void => {
 export const logout = (): void => {
   clearToken()
   clearUserInfo()
+  // 登出同步清空过期标记，避免遗留脏状态
+  clearLoginExpired()
   console.log('已登出')
 }

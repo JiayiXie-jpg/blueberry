@@ -108,7 +108,10 @@ export default {
 
 		async loadData() {
 			try {
-				this.loading = true
+				// 已有数据时静默刷新（bug #7：从结果页返回时骨架屏整页替换闪一下）
+				if (this.taskList.length === 0) {
+					this.loading = true
+				}
 
 				const userInfo = getUserInfo()
 				const openid = (userInfo != null && userInfo.openid != null) ? userInfo.openid : ''

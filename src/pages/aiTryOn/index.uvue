@@ -254,15 +254,11 @@ export default {
 		if (options && options.brandId) {
 			setBrandId(String(options.brandId))
 		}
-		// 分享落地：标题改为「相册探索更多AI试衣」，返回路由至该品牌+门店的相册list页
-		// 注意：demoDetail 的 idx 参数 = 门店ID（首页/品牌馆入口同口径 ?from=banner&idx=shopId）；品牌上下文已由 setBrandId 持久化
+		// 分享落地：标题改为「相册探索更多AI试衣」；返回兜底回首页 tab（bug #9 行业最佳实践：
+		// 分享冷启动栈深=1，navigateBack 会直接退出小程序；此前回 demoDetail（非 tab 页且返回箭头被隐藏）致用户被困）
 		if (this.shareFrom !== '') {
 			this.navTitle = '相册探索更多AI试衣'
-			if (this.shopId !== '') {
-				this.backFallbackUrl = '/pages/demoDetail/index?idx=' + this.shopId
-			} else {
-				this.backFallbackUrl = '/pages/demoDetail/index'
-			}
+			this.backFallbackUrl = '/pages/index/index'
 		}
 		if (this.needRandomAlbum) {
 			this.resolveRandomAlbum().then(() => {
