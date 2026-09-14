@@ -882,7 +882,7 @@ export default {
 	justify-content: center;
 	width: 100%;
 	position: relative;
-	overflow: hidden;
+	/* CR 🟡：overflow 不放在 wrapper，避免裁切超出容器高度的竖图（原布局为居中溢出可见） */
 }
 /* 图片区全屏水印层：斜向平铺、低透明度，只覆盖预览，不改图片源文件 */
 .wm-layer {
@@ -897,14 +897,16 @@ export default {
 	align-content: space-around;
 	justify-content: space-around;
 	z-index: 2;
+	/* CR 🟡：裁剪只作用于水印层自身（旋转子项溢出裁剪），不裁图片 */
+	overflow: hidden;
 }
 .wm-item {
-	width: 50%;
+	width: 33.33%;
 	text-align: center;
 	transform: rotate(-30deg);
 	font-size: 20rpx;
 	color: #FFFFFF;
-	opacity: 0.12;
+	opacity: 0.16;
 	font-weight: 400;
 }
 .result-image {
