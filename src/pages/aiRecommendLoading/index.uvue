@@ -36,6 +36,7 @@
 <script lang="uts">
 import AppFooter from '../../components/AppFooter/AppFooter.uvue'
 import { getAiRecommend, createCreditRecharge, getCreditRechargeStatus } from '../../utils/api.uts'
+import { PayGuard } from '../../utils/payGuard.uts'
 
 export default {
 	components: { AppFooter },
@@ -47,7 +48,7 @@ export default {
 			elapsedSeconds: 0,
 			countdownTimer: null as any,
 			// 推荐次数不足（4001）时的充值支付
-			isPaying: false,
+			payGuard: new PayGuard(), // 统一支付门闩：防连点/防到账竞态下二次拉起支付
 			payPollToken: 0    // 到账轮询会话标记，自增即失效
 		}
 	},
@@ -129,20 +130,21 @@ export default {
 
 		// 4001 推荐次数不足：创建充值订单 → 拉起微信支付 → 轮询到账 → 自动重新分析
 		async handleRecharge() {
-			if (this.isPaying) return
-			this.isPaying = true
+			const guard = this.payGuard as PayGuard
+			if (!guard.tryBegin()) return
 			uni.showToast({ title: '推荐次数不足，请完成支付', icon: 'none' })
 			try {
 				const shopIdNum = parseInt(this.shopId) || 0
 				const res = await createCreditRecharge({ shopId: shopIdNum, credits: 1, feature: 'recommend' })
 				if (res.code !== 200 || !res.data) {
-					this.isPaying = false
+					guard.end()
 					this.status = 'failed'
 					uni.showToast({ title: res.message || '下单失败，请重试', icon: 'none' })
 					return
 				}
 				const order = res.data
 				const outTradeNo = order.outTradeNo
+				let finished = false
 				uni.requestPayment({
 					provider: 'wxpay',
 					timeStamp: order.timeStamp,
@@ -151,11 +153,16 @@ export default {
 					signType: order.signType,
 					paySign: order.paySign,
 					success: () => {
-						// 支付成功：到账为微信异步回调入账，轮询订单状态确认
+						if (finished) return
+						finished = true
+						// 支付成功：到账为微信异步回调入账，轮询订单状态确认（到账双条件见 pollRechargeStatus）
+						guard.toConfirming()
 						this.pollRechargeStatus(outTradeNo)
 					},
 					fail: (payErr: any) => {
-						this.isPaying = false
+						if (finished) return
+						finished = true
+						guard.end()
 						this.status = 'failed'
 						const errMsg: string = payErr?.errMsg ?? ''
 						if (errMsg.indexOf('cancel') !== -1) {
@@ -167,14 +174,16 @@ export default {
 					}
 				} as any)
 			} catch (err) {
-				this.isPaying = false
+				guard.end()
 				this.status = 'failed'
 				console.error('[aiRecommendLoading] 创建充值订单失败:', err)
 				uni.showToast({ title: '下单失败，请重试', icon: 'none' })
 			}
 		},
 
-		// 轮询充值订单状态：每 2.5 秒一次，最多 48 次（约 2 分钟兑底），paid = true 即到账
+		// 轮询充值订单状态：每 2.5 秒一次，最多 48 次（约 2 分钟兑底）。
+		// 到账判定＝双条件 paid && balance > 0：后端 MarkPaid 与加币两步非原子，
+		// 只看 paid 会在「订单已付、次数未到账」窗口误判到账，重新分析即 4001 再拉支付（二次弹窗根因）。
 		pollRechargeStatus(outTradeNo: string) {
 			this.payPollToken = this.payPollToken + 1
 			const token = this.payPollToken
@@ -190,19 +199,23 @@ export default {
 				try {
 					const res = await getCreditRechargeStatus(outTradeNo)
 					if (res.code === 200 && res.data && res.data.paid) {
-						uni.hideLoading()
-						this.isPaying = false
-						uni.showToast({ title: `支付成功，${res.data.credits} 次到账`, icon: 'none' })
-						// 到账后自动重新开始分析（余额已到账，无需重复支付）
-						this.startAnalysis()
-						return
+						if (res.data.balance > 0) {
+							uni.hideLoading()
+							;(this.payGuard as PayGuard).end()
+							uni.showToast({ title: `支付成功，${res.data.credits} 次到账`, icon: 'none' })
+							// 到账后自动重新开始分析（余额已到账，无需重复支付）
+							this.startAnalysis()
+							return
+						}
+						// 已付但余额未到账：继续轮询等待（绝不自动二次拉起支付）
+						console.log('[aiRecommendLoading] 订单已付，余额尚未到账，继续轮询', outTradeNo)
 					}
 				} catch (err) {
 					console.error('[aiRecommendLoading] 查询充值状态失败:', err)
 				}
 				if (count >= maxTimes) {
 					uni.hideLoading()
-					this.isPaying = false
+					;(this.payGuard as PayGuard).end()
 					this.status = 'failed'
 					uni.showToast({ title: '到账确认超时，请重试', icon: 'none' })
 					return
