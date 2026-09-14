@@ -1,7 +1,7 @@
 <template>
 	<view class="page">
 		<!-- 顶栏：统一 CustomNavBar（slot 放搜索框；返回由页面处理搜索清空逻辑） -->
-		<CustomNavBar :manual-back="true" @back="goBack">
+		<CustomNavBar :manual-back="true" :back-fallback-url="'/pages/index/index'" @back="goBack">
 			<view class="search-bar-wrap">
 				<view class="search-bar-nav">
 					<image class="search-icon-small" src="/static/search.png" mode="aspectFit"></image>

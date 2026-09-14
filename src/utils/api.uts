@@ -589,6 +589,8 @@ export const getAiTryOnResult = async (taskId: string) => {
       status: string
       result_image_url: string
       error_message: string
+      // 本人任务详情返回分享令牌（组朋友圈分享链接用，2026-09-14）
+      share_token: string
       template_image_url: string
       style_name: string
       // 分享落地所需：任务所属门店 + 来源相册（2026-09-10）
@@ -598,6 +600,34 @@ export const getAiTryOnResult = async (taskId: string) => {
       category: string
       created_at: string
       updated_at: string
+    }
+  }
+}
+
+/**
+ * 分享落地只读查询（匿名）：凭 share_token 查看他人试衣结果（防 taskId 枚举越权）
+ * GET /api/aiface/tasks/share/{token}，无需登录，只返回最小字段
+ */
+export const getSharedAiTryOnResult = async (shareToken: string) => {
+  const res = await request({
+    url: `/api/aiface/tasks/share/${shareToken}`,
+    method: 'GET',
+    showLoading: false,
+  })
+  return res as {
+    code: number
+    message: string
+    data: {
+      id: number
+      template_id: number
+      status: string
+      result_image_url: string
+      error_message: string
+      style_name: string
+      shop_id: number
+      shop_name: string
+      album_id: number
+      created_at: string
     }
   }
 }
