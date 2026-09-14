@@ -11,9 +11,9 @@
 - **禁止**把 `VITE_API_BASE=http://10.192.39.225:8155` 之类**本机/局域网地址**写进 `.env.local` 或任何提交/构建；
 - 包内 config 只允许出现上述两个自动分流字面量。
 
-### 2. 分支纪律（2026-09-10 主人指示更新）
-- 开发/体验/正式基座 = **`feat/v0.0.1`**（fork: crazyma99/blueberry）；
-- `main` = 最新代码同步分支：每次发版后与 `feat/v0.0.1` 保持一致（已随 v1.0.28 同步至 83b1c88）；
+### 2. 分支纪律（2026-09-14 主人指示更新：main 转正为开发主分支）
+- **开发/体验/正式基座 = `main`**（fork: crazyma99/blueberry）；
+- 原发版线 `feat/v0.0.1` 已于 2026-09-14 归档——tag **`archive/feat-v0.0.1-20260914`**（指向 `4d7b068`），远程分支已删除；历史内容已全量并入 main（0 差异）；
 - 本仓库无 staging 分支；任何合并/发布前先确认。
 
 ### 3. 发布/体验版上传必须走脚本
@@ -30,9 +30,9 @@
 
 ## 二、快速操作流程
 ```bash
-# 开发 → 合并到基座
-git checkout feat/v0.0.1
-# ... 提交到 fork/feat/v0.0.1（git add -> commit -> push fork feat/v0.0.1）
+# 开发 → 合并到基座（main 即开发主分支）
+git checkout main
+# ... 提交到 fork/main（git add -> commit -> push fork main）
 
 # 上传体验版（忽略 env + 校验 + 上传 + 恢复）
 ./scripts/release-trial.sh 1.0.24 "本次更新说明"
