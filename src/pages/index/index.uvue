@@ -77,11 +77,19 @@
 								hover-class="press-dim"
 								@click="onShopClick(shop)"
 							>
+								<!-- 单门店卡片：固定 16:9 比例（宽度撑满父容器、高度=宽×9/16），图片 aspectFill 居中裁切不拉伸 -->
 								<image class="photo-card-img fade-in" :src="shop.homeImage" mode="aspectFill"></image>
 								<view class="photo-card-mask"></view>
 								<view class="photo-card-info">
 									<text class="photo-card-name font-noto-serif">{{ shop.displayName }}</text>
 									<text class="photo-card-sub">{{ shop.displayNameEn }}</text>
+								</view>
+							</view>
+							<!-- 占位卡：店铺数为奇数(≥3)时补全网格——统一尺寸「敬请期待」，不可点击（补全 dangler 空位） -->
+							<view v-if="showPlaceholder" class="photo-card photo-card-placeholder">
+								<view class="placeholder-content">
+									<text class="placeholder-title font-noto-serif">敬请期待</text>
+									<text class="placeholder-sub">COMING SOON</text>
 								</view>
 							</view>
 							<!-- 无店铺时 fallback：demo 图，同 2 列布局 -->
@@ -150,6 +158,7 @@
 		openPrivacyPolicy
 	} from '../../utils/legal.uts'
 	import { resolveShareCard } from '../../utils/share.uts'
+	import { jumpWithContext } from '../../utils/navigate.uts'
 
 	export default {
 		data() {
@@ -165,6 +174,8 @@
 				// 轮播高度：随首张 banner 图宽高比自适应（兜底 794rpx ≈ 设计稿比例）
 				heroHeight: '794rpx',
 				heroHeightReady: false,
+				// 占位卡开关：JS 预计算，避免真机模板表达式求值差异
+				showPlaceholder: false,
 				// 双层视差：当前轮播索引 / 动效重播 tick（每次切换必递增） / 渐隐标记 / 前景层当前项
 				currentIndex: 0,
 				fgTick: 0,
@@ -321,6 +332,9 @@
 						item.homeImage = cosThumb(item.homeImage, 600)
 						return item
 					})
+					// 占位卡开关：奇数(≥3)补 1 张
+					this.showPlaceholder = this.shopList.length > 1 && this.shopList.length % 2 === 1
+					console.log('[index] shops=', this.shopList.length, 'showPlaceholder=', this.showPlaceholder)
 				}
 			} catch (err) {
 				console.error('[index] 加载首页数据失败', err)
@@ -502,16 +516,10 @@
 			if (now - this.lastBannerClickAt < 300) return
 			this.lastBannerClickAt = now
 			hapticTap()
-			// 前端白名单兜底：仅 /pages/ 或 http(s) 允许跳转
-			if (linkUrl.startsWith('/pages/')) {
-				if (linkUrl.startsWith('/pages/index/index') || linkUrl.startsWith('/pages/priceHomePage/index') || linkUrl.startsWith('/pages/mine/index')) {
-					uni.switchTab({ url: linkUrl })
-				} else {
-					uni.navigateTo({ url: linkUrl })
-				}
-			} else if (linkUrl.startsWith('http://') || linkUrl.startsWith('https://')) {
-				uni.navigateTo({ url: '/pages/webview/index?url=' + encodeURIComponent(linkUrl) })
-			}
+			// 统一跳转：白名单校验 + 上下文补齐（品牌默认门店 / brandId）
+			jumpWithContext(linkUrl).catch((err) => {
+				console.error('[index] banner 跳转失败', err)
+			})
 		},
 		onShopClick(shop) {
 				// 触感反馈：客片卡片点击轻振动
@@ -751,6 +759,32 @@
 	}
 	.photo-card-full{
 		width: 100%;
+		/* 固定 16:9：750×9/16≈422rpx；图片 aspectFill 居中裁切不拉伸 */
+		height: 422rpx;
+	}
+	.photo-card-placeholder{
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: 2rpx dashed rgba(243, 217, 172, 0.35);
+		background: rgba(255, 255, 255, 0.02);
+	}
+	.photo-card-placeholder .placeholder-content{
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+	}
+	.photo-card-placeholder .placeholder-title{
+		font-size: var(--font-size-body-lg);
+		font-weight: 400;
+		color: var(--color-primary-50);
+		letter-spacing: 2rpx;
+	}
+	.photo-card-placeholder .placeholder-sub{
+		margin-top: 4rpx;
+		font-size: var(--font-size-caption);
+		color: var(--color-primary-30);
+		letter-spacing: 2rpx;
 	}
 	.photo-card-img{
 		width: 100%;
