@@ -23,7 +23,7 @@
 			<!-- 付费模式且无剩余次数：价格按钮，点击引导充值，到账后自动继续分析 -->
 			<view v-if="isPaidMode && creditBalance <= 0" class="action-btn-wrap">
 				<view
-					:class="photoPreviewUrl !== '' ? 'action-btn' : 'action-btn action-btn-disabled'"
+					:class="photoPreviewUrl !== '' && !payBusy ? 'action-btn' : 'action-btn action-btn-disabled'"
 					hover-class="press-dim"
 					@click="handleStartAnalysis"
 				>
@@ -34,7 +34,7 @@
 			<!-- 非付费模式或有剩余次数：原按钮，有限免时右上角展示角标 -->
 			<view v-else class="action-btn-wrap">
 				<view
-					:class="photoPreviewUrl !== '' ? 'action-btn' : 'action-btn action-btn-disabled'"
+					:class="photoPreviewUrl !== '' && !payBusy ? 'action-btn' : 'action-btn action-btn-disabled'"
 					hover-class="press-dim"
 					@click="handleStartAnalysis"
 				>
@@ -75,6 +75,7 @@
 
 <script lang="uts">
 import { uploadPhoto, rejectAllPendingUploads, getCreditBalance, createCreditRecharge, getCreditRechargeStatus, getShops } from '../../utils/api.uts'
+import { PayGuard } from '../../utils/payGuard.uts'
 import { checkUploadPhoto } from '../../utils/photoCheck.uts'
 import { isLoggedIn, getUserInfo, mergeUserInfo, UserInfo, consumeLoginExpired } from '../../utils/auth.uts'
 import { runPhoneLogin } from '../../utils/loginFlow.uts'
@@ -108,7 +109,7 @@ export default {
 			creditBalance: -1,        // 剩余推荐次数，-1 = 未查询到
 			priceFenPerCredit: 0,     // 推荐单次价格（分），0 = 未开通付费购买（非付费模式）
 			creditLoaded: false,      // 是否已成功查询到推荐余额
-			isPaying: false,
+			payGuard: new PayGuard(), // 统一支付门闩：防连点/防到账竞态下二次拉起支付
 			resumeAnalyzeAfterCredit: false, // 支付成功后自动继续分析
 			payPollToken: 0           // 到账轮询会话标记，自增即失效
 		}
@@ -124,6 +125,10 @@ export default {
 			if (fen <= 0) return '0'
 			if (fen % 100 === 0) return `${fen / 100}`
 			return (fen / 100).toFixed(2)
+		},
+		// 支付流程进行中（下单/支付面板/到账确认）：按钮置灰防连点
+		payBusy(): boolean {
+			return (this.payGuard as PayGuard).isBusy()
 		}
 	},
 	onLoad(options : any) {
@@ -172,8 +177,9 @@ export default {
 	},
 	onHide() {
 		uni.$off('login-required')
-		// 页面隐藏时终止可能进行中的到账轮询
+		// 页面隐藏时终止可能进行中的到账轮询，并复位支付门闩（回到页面可再次操作）
 		this.payPollToken = this.payPollToken + 1
+		;(this.payGuard as PayGuard).end()
 	},
 	methods: {
 		choosePhoto() {
@@ -293,21 +299,23 @@ export default {
 		},
 
 		// 充值：创建订单 → 拉起微信支付 → 轮询到账
+		// 统一支付门闩：tryBegin 防连点/防并发；success 回调 once 化防平台重复回调
 		async handleRecharge() {
-			if (this.isPaying) return
-			this.isPaying = true
+			const guard = this.payGuard as PayGuard
+			if (!guard.tryBegin()) return
 			// 支付由分析流程触发，到账后自动继续分析
 			this.resumeAnalyzeAfterCredit = true
 			try {
 				const shopIdNum = parseInt(this.shopId) || 0
 				const res = await createCreditRecharge({ shopId: shopIdNum, credits: 1, feature: 'recommend' })
 				if (res.code !== 200 || !res.data) {
-					this.isPaying = false
+					guard.end()
 					uni.showToast({ title: res.message || '下单失败，请重试', icon: 'none' })
 					return
 				}
 				const order = res.data
 				const outTradeNo = order.outTradeNo
+				let finished = false
 				uni.requestPayment({
 					provider: 'wxpay',
 					timeStamp: order.timeStamp,
@@ -316,11 +324,16 @@ export default {
 					signType: order.signType,
 					paySign: order.paySign,
 					success: () => {
-						// 支付成功：到账为微信异步回调入账，轮询订单状态确认
+						if (finished) return
+						finished = true
+						// 支付成功：到账为微信异步回调入账，轮询订单状态确认（到账双条件见 pollRechargeStatus）
+						guard.toConfirming()
 						this.pollRechargeStatus(outTradeNo)
 					},
 					fail: (payErr: any) => {
-						this.isPaying = false
+						if (finished) return
+						finished = true
+						guard.end()
 						const errMsg: string = payErr?.errMsg ?? ''
 						if (errMsg.indexOf('cancel') !== -1) {
 								uni.showToast({ title: '已取消支付', icon: 'none' })
@@ -331,13 +344,15 @@ export default {
 					}
 				} as any)
 			} catch (err) {
-				this.isPaying = false
+				guard.end()
 				console.error('[aiRecommend] 创建充值订单失败:', err)
 				uni.showToast({ title: '下单失败，请重试', icon: 'none' })
 			}
 		},
 
-		// 轮询充值订单状态：每 2.5 秒一次，最多 48 次（约 2 分钟兑底），paid = true 即到账
+		// 轮询充值订单状态：每 2.5 秒一次，最多 48 次（约 2 分钟兑底）。
+		// 到账判定＝双条件 paid && balance > 0：后端 MarkPaid 与加币两步非原子，
+		// 只看 paid 会在「订单已付、次数未到账」窗口误判到账，续跑后 4001 再拉支付（二次弹窗根因）。
 		pollRechargeStatus(outTradeNo: string) {
 			this.payPollToken = this.payPollToken + 1
 			const token = this.payPollToken
@@ -353,20 +368,24 @@ export default {
 				try {
 					const res = await getCreditRechargeStatus(outTradeNo)
 					if (res.code === 200 && res.data && res.data.paid) {
-						uni.hideLoading()
-						this.isPaying = false
-						this.creditBalance = res.data.balance
-						uni.showToast({ title: `支付成功，${res.data.credits} 次到账`, icon: 'none' })
-						this.resumeAnalyzeIfNeeded()
-						return
+						if (res.data.balance > 0) {
+							uni.hideLoading()
+							;(this.payGuard as PayGuard).end()
+							this.creditBalance = res.data.balance
+							uni.showToast({ title: `支付成功，${res.data.credits} 次到账`, icon: 'none' })
+							this.resumeAnalyzeIfNeeded()
+							return
+						}
+						// 已付但余额未到账：继续轮询等待（绝不自动二次拉起支付）
+						console.log('[aiRecommend] 订单已付，余额尚未到账，继续轮询', outTradeNo)
 					}
 				} catch (err) {
 					console.error('[aiRecommend] 查询充值状态失败:', err)
 				}
 				if (count >= maxTimes) {
 					uni.hideLoading()
-					this.isPaying = false
-					uni.showToast({ title: '到账确认超时，请稍后查看余额', icon: 'none' })
+					;(this.payGuard as PayGuard).end()
+					uni.showToast({ title: '到账确认超时，请稍后查看余额再试', icon: 'none' })
 					return
 				}
 				setTimeout(check, 2500)
@@ -374,11 +393,16 @@ export default {
 			check()
 		},
 
-		// 支付到账后，自动继续之前被打断的分析
-		resumeAnalyzeIfNeeded() {
-			if (this.resumeAnalyzeAfterCredit) {
-				this.resumeAnalyzeAfterCredit = false
+		// 支付到账后，自动继续之前被打断的分析。
+		// 续跑前重拉余额确认到账；仍未到账只提示，绝不自动二次拉起支付（防二次弹窗/二次收费）。
+		async resumeAnalyzeIfNeeded() {
+			if (!this.resumeAnalyzeAfterCredit) return
+			this.resumeAnalyzeAfterCredit = false
+			await this.loadCreditInfo()
+			if (this.creditLoaded && this.creditBalance > 0) {
 				this.handleStartAnalysis()
+			} else {
+				uni.showToast({ title: '到账延迟，请稍候重新发起分析', icon: 'none' })
 			}
 		},
 
