@@ -1,12 +1,12 @@
 <template>
 	<view class="page">
-		<CustomNavBar :title="navTitle" />
+		<CustomNavBar :title="navTitle" :back-fallback-url="'/pages/index/index'" />
 
 		<!-- 加载态 -->
 		<view v-if="status === 'processing'" class="center-content">
 			<view class="loading-wrapper">
 				<view class="loading-spinner"></view>
-				<text class="loading-tip">正在后台为你生成，完成后会通过微信服务通知提醒你</text>
+				<text class="loading-tip">{{ shareReadOnly ? '作品正在生成中，请稍后再来' : '正在后台为你生成，完成后会通过微信服务通知提醒你' }}</text>
 				<text class="elapsed-text" v-if="elapsedSeconds > 0">已等待 {{ elapsedSeconds }} 秒</text>
 				<view v-if="!shareReadOnly" class="browse-btn btn-secondary" hover-class="press-dim" @click="goBrowseAlbums">逛逛其他相册</view>
 			</view>
@@ -60,6 +60,7 @@
 			<view class="fail-wrapper">
 				<!-- 分享落地只读：不显示重试，仅友好提示 + 「我也要试」 -->
 				<text v-if="shareReadOnly" class="fail-text">该作品暂不可查看</text>
+				<!-- 失败文案保持通用：后端 error_message 仅记 console 日志，避免向用户泄露内部错误（CR 🟡） -->
 				<text v-else-if="failCount >= 3" class="fail-text">当前服务繁忙，请稍后再试</text>
 				<text v-else class="fail-text">生成失败，请重试</text>
 				<view v-if="!shareReadOnly && failCount < 3" class="retry-btn" hover-class="press-dim"
@@ -112,6 +113,7 @@ export default {
 			status: 'processing' as string,  // 'pending' | 'processing' | 'completed' | 'failed'
 			resultImageUrl: '',
 			failCount: 0,
+			pollErrorStreak: 0,   // 连续网络异常计数（容忍 3 次抖动，避免单次闪断即打断等待）
 			pollingTimer: null as any,
 			elapsedSeconds: 0,
 			countdownTimer: null as any,
@@ -254,8 +256,7 @@ export default {
 		startPolling() {
 			this.status = 'processing'
 			this.elapsedSeconds = 0
-
-			// 启动计时器，每秒更新已等待时间
+			this.pollErrorStreak = 0
 			this.countdownTimer = setInterval(() => {
 				this.elapsedSeconds += 1
 				// 超时 180 秒（3分钟），停止轮询，展示失败
@@ -285,6 +286,7 @@ export default {
 				const res = await getAiTryOnResult(this.taskId)
 				// aiface 接口 code === 0 或 200 表示成功
 				if ((res.code === 0 || res.code === 200) && res.data) {
+					this.pollErrorStreak = 0
 					const taskStatus = res.data.status
 					if (taskStatus === 'completed') {
 						this.stopPolling()
@@ -307,22 +309,26 @@ export default {
 						this.stopPolling()
 						this.status = 'failed'
 						this.taskErrorMessage = res.data.error_message ?? ''
+						console.error('[aiTryOnResult] 任务生成失败:', this.taskErrorMessage)
 					}
 					// pending / processing → 继续轮询
 				} else {
-					// 非成功响应（任务不存在/无权限/接口异常）→ 立即失败，不再空等 180 秒（bug #8）
+					// 确定失败（任务不存在/无权限/业务码）→ 立即失败，不再空等 180 秒（bug #8）
 					this.stopPolling()
 					this.status = 'failed'
 					this.taskErrorMessage = res.message || '任务查询失败'
+					console.error('[aiTryOnResult] 任务查询确定失败:', this.taskErrorMessage)
 				}
 			} catch (err) {
-				console.error('轮询AI试衣结果失败:', err)
-				// 网络异常同样即时置失败（bug #8：静默吞错导致空等）
-				this.stopPolling()
-				this.status = 'failed'
+				// 网络抖动容忍 3 次（CR 🟡）：瞬时闪断继续轮询，连续 3 次才判定失败
+				this.pollErrorStreak = this.pollErrorStreak + 1
+				console.error('轮询AI试衣结果失败:', err, 'streak=', this.pollErrorStreak)
+				if (this.pollErrorStreak >= 3) {
+					this.stopPolling()
+					this.status = 'failed'
+				}
 			}
 		},
-
 		stopPolling() {
 			if (this.pollingTimer != null) {
 				clearInterval(this.pollingTimer)
@@ -762,6 +768,16 @@ export default {
 
 		handleBack() {
 			this.stopPolling()
+			// 朋友圈单页模式禁跳页：引导用左上角 ✕ 关闭（CR 🟡）
+			if (this.isTimelinePage) {
+				uni.showModal({
+					title: '蓝梅旅拍',
+					content: '请点击左上角「✕」关闭返回朋友圈',
+					showCancel: false,
+					confirmText: '知道了'
+				})
+				return
+			}
 			// 分享冷启动栈深=1：navigateBack 会直接退出小程序 → 回首页（行业最佳实践）
 			if (getCurrentPages().length > 1) {
 				uni.navigateBack()
