@@ -22,6 +22,11 @@
 					mode="widthFix"
 					@load="onImageLoad"
 				></image>
+				<!-- 图片区全屏水印（小程序内部/只读/单页模式统一，2026-09-14 主人指示）：
+				     仅视觉覆盖，付费保存下载的是原图 URL，绝不含水印 -->
+				<view class="wm-layer">
+					<view v-for="i in 24" :key="i" class="wm-item">{{ watermarkText }}</view>
+				</view>
 			</view>
 			<!-- 分享落地只读：仅结果图 + 「我也要试」（bug #8 只读模式） -->
 			<view v-if="shareReadOnly" class="action-bar">
@@ -141,6 +146,13 @@ export default {
 		// 付费模式：已查询到余额且商户配置了单次价格
 		isPaidMode(): boolean {
 			return this.creditLoaded && this.priceFenPerCredit > 0
+		},
+		// 图片区全屏水印文案：蓝梅AI + 商家名 + 固定提示（商家名缺失时退化为品牌+提示）
+		watermarkText(): string {
+			if (this.shopName !== '') {
+				return `蓝梅AI · ${this.shopName} · AI试衣效果 仅供预览`
+			}
+			return '蓝梅AI · AI试衣效果 仅供预览'
 		},
 		// 单次价格文案（分 → 元，整元去小数）
 		priceText(): string {
@@ -869,6 +881,33 @@ export default {
 	align-items: center;
 	justify-content: center;
 	width: 100%;
+	position: relative;
+	/* CR 🟡：overflow 不放在 wrapper，避免裁切超出容器高度的竖图（原布局为居中溢出可见） */
+}
+/* 图片区全屏水印层：斜向平铺、低透明度，只覆盖预览，不改图片源文件 */
+.wm-layer {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-content: space-around;
+	justify-content: space-around;
+	z-index: 2;
+	/* CR 🟡：裁剪只作用于水印层自身（旋转子项溢出裁剪），不裁图片 */
+	overflow: hidden;
+}
+.wm-item {
+	width: 33.33%;
+	text-align: center;
+	transform: rotate(-30deg);
+	font-size: 20rpx;
+	color: #FFFFFF;
+	opacity: 0.16;
+	font-weight: 400;
 }
 .result-image {
 	width: 100%;
